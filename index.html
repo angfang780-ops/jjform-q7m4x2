@@ -2194,6 +2194,94 @@ function downloadFile(f){
   setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 
+/* ---------- GitHub 받은함 (2026-10-14) ----------
+   폰 공유 창에서 원드라이브 폴더를 매번 고르던 걸 없애려고, 폰은 폰입력_….txt를 비공개 저장소
+   angfang780-ops/jjform-inbox 의 inbox/ 에 바로 올린다. 토큰은 각 브라우저 localStorage에 사용자가 직접 넣는다.
+   PC 폼은 받은함 확인 전에 그 파일들을 OneDrive\1입력폼 으로 내려받고 저장소에서 지운다 → 그 뒤 흐름은 그대로.
+   사진이 든 큰 파일(수십 MB)도 되게 contents API 대신 git blob/tree/commit API를 쓴다.
+   지운 파일이 저장소 기록에 쌓이지 않게(용량), 내려받은 뒤엔 기록 없는 새 커밋으로 덮는다. */
+var GH_REPO = 'angfang780-ops/jjform-inbox', GH_DIR = 'inbox/', GH_TOKEN_KEY = 'jjsafety-gh-token';
+var ghSkipOnce = false; // GitHub 올리기가 실패하면 다음 한 번은 원드라이브 공유로
+function ghToken(){ try{ return localStorage.getItem(GH_TOKEN_KEY) || ''; }catch(e){ return ''; } }
+function ghSetToken(){
+  var t = prompt('GitHub 받은함 토큰을 붙여넣으세요 (github_pat_ 로 시작).\n' +
+    (ghToken() ? '지금 저장된 토큰이 있어요. ' : '') + '비워 두고 확인하면 저장된 토큰을 지웁니다.', '');
+  if(t === null) return;
+  t = t.trim();
+  try{ if(t) localStorage.setItem(GH_TOKEN_KEY, t); else localStorage.removeItem(GH_TOKEN_KEY); }
+  catch(e){ alert('이 브라우저에 저장하지 못했어요: ' + e); return; }
+  ghRefreshUi();
+  if(t && !IS_PHONE && xlState.siteDir) offerInbox(xlState.siteDir, true);
+}
+function ghRefreshUi(){
+  var on = !!ghToken();
+  SHARE_LABEL = on ? '📤 받은함으로 보내기 (휴대폰)' : '📤 원드라이브로 보내기 (휴대폰)';
+  if($('share-btn') && !$('share-btn').disabled) $('share-btn').textContent = SHARE_LABEL;
+  if($('gh-token-btn')) $('gh-token-btn').textContent = on ? '🔑 GitHub 받은함 ✓' : '🔑 GitHub 받은함 토큰';
+}
+async function gh(method, path, body, raw){
+  var h = { 'Authorization': 'Bearer ' + ghToken(), 'X-GitHub-Api-Version': '2022-11-28',
+            'Accept': raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json' };
+  if(body) h['Content-Type'] = 'application/json';
+  var r = await fetch('https://api.github.com/repos/' + GH_REPO + path,
+                      { method: method, headers: h, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+  if(!r.ok){
+    var m = ''; try{ m = (await r.json()).message || ''; }catch(e){}
+    var err = new Error('GitHub ' + r.status + (m ? ' ' + m : '') +
+      (r.status === 401 ? ' (토큰이 틀렸거나 만료됨)' : r.status === 404 ? ' (저장소가 없거나 토큰 권한 없음)' : ''));
+    err.status = r.status; throw err;
+  }
+  return raw ? r.blob() : r.json();
+}
+async function ghHead(){
+  var ref = await gh('GET', '/git/ref/heads/main');
+  var c = await gh('GET', '/git/commits/' + ref.object.sha);
+  return { sha: ref.object.sha, tree: c.tree.sha };
+}
+async function ghUpload(f){
+  var u = await blobToDataUrl(f);
+  var blob = await gh('POST', '/git/blobs', { content: u.slice(u.indexOf(',') + 1), encoding: 'base64' });
+  for(var i = 0; ; i++){
+    var hd = await ghHead();
+    var tree = await gh('POST', '/git/trees', { base_tree: hd.tree,
+      tree: [{ path: GH_DIR + f.name, mode: '100644', type: 'blob', sha: blob.sha }] });
+    var c = await gh('POST', '/git/commits', { message: f.name, tree: tree.sha, parents: [hd.sha] });
+    try{ await gh('PATCH', '/git/refs/heads/main', { sha: c.sha }); return; }
+    catch(e){ if(e.status !== 422 || i >= 2) throw e; } // 그 사이 다른 파일이 올라감 → 다시
+  }
+}
+/* PC: 저장소 inbox/ 의 폰입력 파일을 받은함 폴더로 내려받고 저장소에서 지운다. 받은 개수를 돌려준다 */
+async function ghPullInbox(inbox){
+  if(!ghToken()) return 0;
+  var hd = await ghHead();
+  var all = (await gh('GET', '/git/trees/' + hd.tree + '?recursive=1')).tree;
+  var items = all.filter(function(x){
+    return x.type === 'blob' && x.path.indexOf(GH_DIR + PHONE_PREFIX) === 0 && /\.txt$/i.test(x.path);
+  });
+  if(!items.length) return 0;
+  for(var i = 0; i < items.length; i++){
+    var name = items[i].path.slice(GH_DIR.length);
+    var b = await gh('GET', '/git/blobs/' + items[i].sha, null, true);
+    await writeInto(inbox, name, b);
+    var chk = await (await inbox.getFileHandle(name)).getFile();
+    if(chk.size !== b.size) throw new Error(name + ' 을(를) 받은함에 제대로 못 썼어요 (저장소엔 남겨 둠)');
+  }
+  // 받은 파일을 뺀 트리로 기록 없는 새 커밋 → 강제로 main 교체 (예전 사진이 저장소에 쌓이지 않게)
+  for(var k = 0; ; k++){
+    var cur = await ghHead();
+    var curTree = (await gh('GET', '/git/trees/' + cur.tree + '?recursive=1')).tree;
+    var del = items.filter(function(x){ return curTree.some(function(y){ return y.path === x.path; }); })
+                   .map(function(x){ return { path: x.path, mode: '100644', type: 'blob', sha: null }; });
+    var t = del.length ? (await gh('POST', '/git/trees', { base_tree: cur.tree, tree: del })).sha : cur.tree;
+    var c = await gh('POST', '/git/commits', { message: '받은함 비움', tree: t, parents: [] });
+    // 그 사이 폰에서 새로 올렸으면(main이 바뀜) 덮어쓰면 안 되니 다시
+    if((await gh('GET', '/git/ref/heads/main')).object.sha !== cur.sha){ if(k >= 2) break; continue; }
+    await gh('PATCH', '/git/refs/heads/main', { sha: c.sha, force: true });
+    break;
+  }
+  return items.length;
+}
+
 /* -- 휴대폰: 보낼 파일 만들기 + 공유 -- */
 async function buildPhoneFile(){
   await refreshPhotoDate();
@@ -2219,6 +2307,23 @@ async function sharePhone(){
   var f;
   try{ f = await p; }
   catch(err){ phonePrep = null; btn.disabled = false; btn.textContent = SHARE_LABEL; alert('파일 만들기 실패: ' + err); return; }
+  if(ghToken() && !ghSkipOnce){
+    btn.textContent = '받은함에 올리는 중…';
+    try{
+      await ghUpload(f);
+      btn.disabled = false;
+      rememberPhoneSite(val('f-site'));
+      btn.textContent = '✓ 받은함에 올렸어요 — PC에서 현장 폴더를 고르면 불러옵니다';
+      return;
+    }catch(err){
+      btn.disabled = false;
+      ghSkipOnce = true; // 다음 한 번은 공유 창으로
+      btn.textContent = '⚠ 받은함 올리기 실패 — 한 번 더 누르면 원드라이브 공유로 보냄';
+      alert('GitHub 받은함에 못 올렸어요: ' + (err.message || err) + '\n\n버튼을 한 번 더 누르면 예전처럼 원드라이브 공유 창으로 보냅니다.');
+      return;
+    }
+  }
+  ghSkipOnce = false;
   btn.disabled = false;
   if(navigator.canShare && navigator.share && navigator.canShare({ files:[f] })){
     try{
@@ -2426,6 +2531,11 @@ async function offerInbox(siteDir, manual){
       return false;
     }
     setInboxState('📱 받은함 확인 중…');
+    var ghNote = '';
+    if(ghToken()){
+      try{ var n = await ghPullInbox(inbox); if(n) ghNote = ' · GitHub에서 ' + n + '개 받음'; }
+      catch(err){ ghNote = ' · ⚠ GitHub 받은함 확인 실패: ' + (err.message || err); }
+    }
     var files = await listPhoneFiles(inbox), hits = [], others = 0;
     for(var i = 0; i < files.length; i++){
       try{
@@ -2435,7 +2545,8 @@ async function offerInbox(siteDir, manual){
       }catch(err){ others++; }
     }
     if(!hits.length){
-      setInboxState('📱 받은함: 「' + escH(siteDir.name) + '」 현장 파일 없음' + (others ? ' (다른 파일 ' + others + '개)' : ''), 'ok');
+      setInboxState('📱 받은함: 「' + escH(siteDir.name) + '」 현장 파일 없음' + (others ? ' (다른 파일 ' + others + '개)' : '') + escH(ghNote),
+                    ghNote.indexOf('⚠') >= 0 ? 'warn' : 'ok');
       // 이미 불러와서 받은함\불러옴으로 옮긴 파일이면 → 날짜 폴더에 풀어 둔 입력을 다시 불러온다 (2026-10-13)
       if(manual && (await reloadArchived(inbox, siteDir))) return true;
       if(manual) alert('받은함에 이 현장(' + siteDir.name + ') 파일이 없어요.' +
@@ -2449,13 +2560,13 @@ async function offerInbox(siteDir, manual){
       (h.p.signature ? ', 서명 있음' : '') + ', 사진 ' + Object.keys(h.p.photos || {}).length + '장' +
       (hits.length > 1 ? ' · 같은 현장 파일 ' + hits.length + '개 중 최신' : '') + ').\n\n' +
       '불러올까요?\n(「' + siteDir.name + '\\' + (st.folder || todayYYMMDD()) + '」에 저장되고, 지금 폼 내용은 바뀝니다)';
-    if(!confirm(msg)){ setInboxState('📱 받은함: 휴대폰 입력 있음 (불러오지 않음)'); return false; }
+    if(!confirm(msg)){ setInboxState('📱 받은함: 휴대폰 입력 있음 (불러오지 않음)' + escH(ghNote)); return false; }
     if(!(await importPhonePayload(h.p, siteDir))) return false;
     await archiveInboxFile(inbox, h.e);
     // 같은 현장을 고쳐서 다시 보낸 예전 파일도 같이 정리 (다음에 예전 것을 또 묻지 않게, 2026-10-13)
     for(var k = 1; k < hits.length; k++) await archiveInboxFile(inbox, hits[k].e);
     setInboxState('📱 받은함에서 불러옴: ' + escH(h.e.name) + (hits.length > 1 ? ' (예전 파일 ' + (hits.length - 1) + '개도 같이)' : '') +
-      ' → 받은함\\불러옴 으로 옮김', 'ok');
+      ' → 받은함\\불러옴 으로 옮김' + escH(ghNote), 'ok');
     return true;
   }catch(err){
     setInboxState('📱 받은함 확인 실패: ' + escH(err.message || err), 'warn');
@@ -2570,11 +2681,22 @@ if(IS_PHONE){
   dn.style.cssText = 'font-size:11.5px;color:var(--ink-dim);margin-top:6px;';
   $('share-btn').insertAdjacentElement('afterend', dn);
   pruneDrafts();
-  document.querySelector('.output-card .steps').innerHTML =
+  document.querySelector('.output-card .steps').innerHTML = ghToken() ?
+    '<li><strong>「📤 받은함으로 보내기」</strong> → 폴더 선택 없이 바로 올라갑니다 (GitHub 받은함)</li>' +
+    '<li>PC에서 폼을 열고 현장 폴더를 고르면 받은함에서 자동으로 불러옵니다 (서명·칸·사진)</li>' :
     '<li><strong>「📤 원드라이브로 보내기」</strong> → 공유 창에서 <strong>OneDrive</strong> → <code>1입력폼</code> 폴더에 업로드 (다운로드 화면이 뜨면 저장 후 원드라이브 앱 → <code>1입력폼</code> → + → 업로드)</li>' +
     '<li>PC에서 폼을 열고 현장 폴더를 고르면 받은함에서 자동으로 불러옵니다 (서명·칸·사진)</li>';
 }
 $('share-btn').addEventListener('click', sharePhone);
+// GitHub 받은함 토큰 버튼: 폰은 보내기 버튼 옆, PC는 받은함 줄
+(function(){
+  var b = document.createElement('button'); b.type = 'button'; b.id = 'gh-token-btn';
+  b.title = 'GitHub 받은함 토큰 넣기·바꾸기·지우기 (이 브라우저에만 저장)';
+  b.addEventListener('click', ghSetToken);
+  if(IS_PHONE){ b.style.cssText = 'font-size:12px;'; $('share-btn').insertAdjacentElement('afterend', b); }
+  else $('inbox-row').appendChild(b);
+  ghRefreshUi();
+})();
 $('inbox-btn').addEventListener('click', async function(){
   var h = await inboxHandle();
   if(!h){ h = await connectInbox(); if(!h) return; }
