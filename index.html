@@ -360,7 +360,7 @@
     <div class="group-label">전경</div>
     <div class="photo-grid" data-group="scene"></div>
 
-    <p class="hint">이행·위험·자료·교육·장비 사진은 아래 <strong>P.2 · P.3 · P.5</strong> 각 항목 옆에서 넣습니다. 넣은 사진은 <strong>전경1.jpg, 위험1.jpg</strong> 식으로 이름이 바뀌어 저장됩니다. 저장 폴더 이름은 <strong>첫 사진의 촬영일시</strong>(전경1 우선)에서 자동 결정됩니다 — <span id="photo-date-note">사진을 넣으면 여기에 표시</span>. 아래 <strong>생성</strong> 후 「폴더에 바로 저장」(Chrome·Edge) 또는 「ZIP 저장」을 쓰세요.</p>
+    <p class="hint">이행·위험·자료·교육·장비 사진은 아래 <strong>P.2 · P.3 · P.5</strong> 각 항목 옆에서 넣습니다. 넣은 사진은 <strong>전경1.jpg, 위험1.jpg</strong> 식으로 이름이 바뀌어 저장됩니다. 저장 폴더는 <strong>사진을 고른 날짜 폴더</strong>로 자동 결정됩니다(못 찾으면 오늘 날짜) — <span id="photo-date-note">사진을 넣으면 여기에 표시</span>. 아래 <strong>생성</strong> 후 「폴더에 바로 저장」(Chrome·Edge) 또는 「ZIP 저장」을 쓰세요.</p>
   </div>
 
   <div class="card">
@@ -1059,7 +1059,7 @@ function parseExifDate(dv){
 
 /* 저장 폴더 = 사진을 가져온 날짜 폴더 (2026-10-14 사용자 지시: 사진을 먼저 날짜 폴더별로 나눠 두고 폼을 쓰므로
    무조건 그 폴더에). 브라우저는 원래 경로를 안 알려주므로, 현장 폴더 안 YYMMDD 폴더에서
-   이름·크기가 같은 파일을 찾아 그 폴더로 정한다. 못 찾을 때만(폰 갤러리 등) 첫 사진 촬영일시 → 파일 수정일 → 오늘. */
+   이름·크기가 같은 파일을 찾아 그 폴더로 정한다. 못 찾으면(폰 갤러리 등) 오늘. 촬영일시는 보지 않는다(2026-10-15). */
 var photoDateStr = todayYYMMDD();
 var photoDateSource = '';
 async function findSourceFolder(siteDir, labels){
@@ -1085,22 +1085,14 @@ async function refreshPhotoDate(siteHint){
   var labels = ORDER_REF.filter(function(l){ return photos[l]; });
   var result = await findSourceFolder(siteHint || pickedSiteDir, labels);
   photoDateSource = result ? 'folder' : '';
-  for(var i = 0; i < labels.length && !result; i++){
-    result = await readExifDate(photos[labels[i]].file);
-  }
-  if(!result){
-    for(var j = 0; j < labels.length && !result; j++){
-      var f = photos[labels[j]].file;
-      if(f && f.lastModified) result = dateToYYMMDD(new Date(f.lastModified));
-    }
-  }
+  // 촬영일시·파일 날짜는 보지 않는다 (2026-10-15 사용자 지시: 사진을 고른 날짜 폴더에만 저장)
   photoDateStr = result || todayYYMMDD();
   photoDateFromPhotos = !!result;
   if(resumeFolder){
     var el = $('photo-date-note');
     if(el) el.textContent = folderName() === resumeFolder
       ? '저장 폴더: ' + resumeFolder + ' (불러온 날짜 폴더에 이어서 저장)'
-      : '저장 폴더: ' + photoDateStr + ' (' + (photoDateSource === 'folder' ? '사진을 가져온 날짜 폴더' : '촬영일시') + ' — 사진 없이 저장했던 「' + resumeFolder + '」의 입력·서명을 이 폴더로 옮김)';
+      : '저장 폴더: ' + photoDateStr + ' (사진을 가져온 날짜 폴더 — 사진 없이 저장했던 「' + resumeFolder + '」의 입력·서명을 이 폴더로 옮김)';
     return folderName();
   }
   updatePhotoDateNote(labels.length, !!result);
@@ -1111,13 +1103,13 @@ function updatePhotoDateNote(count, fromMeta){
   if(!el) return;
   if(!count){ el.textContent = '사진을 넣으면 여기에 표시'; return; }
   el.textContent = '저장 폴더: ' + photoDateStr + (photoDateSource === 'folder' ? ' (사진을 가져온 날짜 폴더)'
-    : fromMeta ? ' (현장 폴더에서 같은 사진을 못 찾아 촬영일시로)' : ' (메타 없음 → 파일 날짜/오늘)');
+    : ' (현장 폴더의 날짜 폴더에서 같은 사진을 못 찾아 오늘 날짜로)');
 }
 // 「이어서 작성」으로 불러온 날짜 폴더가 있으면 그 폴더에 계속 저장한다 (2026-10-09)
 var resumeFolder = null;
 var photoDateFromPhotos = false;
 // 단, 그 폴더에 사진이 하나도 없으면(서명·인원만 먼저 저장 → 폴더명이 '오늘'로 정해진 경우)
-// 나중에 넣은 사진의 촬영일시가 우선한다. 하루 지나 전날 보고서를 쓸 때 오늘 폴더로 가던 문제 (2026-10-14)
+// 나중에 넣은 사진을 가져온 날짜 폴더가 우선한다. 하루 지나 전날 보고서를 쓸 때 오늘 폴더로 가던 문제 (2026-10-14)
 function hasSavedPhotos(){ return Object.keys(photos).some(function(l){ return photos[l].existing; }); }
 function folderName(){
   if(resumeFolder && !hasSavedPhotos() && photoDateFromPhotos && photoDateStr !== resumeFolder) return photoDateStr;
@@ -1352,7 +1344,7 @@ async function saveToFolder(){
     btn.textContent = '저장 중…';
     await refreshPhotoDate(siteDir);
     var dateDir = await siteDir.getDirectoryHandle(folderName(), { create:true });
-    // 사진 없이 저장했던 폴더 → 사진 촬영일 폴더로 옮기는 경우: 서명은 원본 그대로 복사 (2026-10-14)
+    // 사진 없이 저장했던 폴더 → 사진을 가져온 날짜 폴더로 옮기는 경우: 서명은 원본 그대로 복사 (2026-10-14)
     var oldFolder = (resumeFolder && resumeFolder !== folderName()) ? resumeFolder : null, oldDir = null;
     if(oldFolder){
       try{ oldDir = await siteDir.getDirectoryHandle(oldFolder); }catch(e){}
