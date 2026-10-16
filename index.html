@@ -604,6 +604,8 @@ function dropBlockPhoto(blk){
 
 /* ---------- 이행사항 텍스트 블록 (+ 이행사진 슬롯) ---------- */
 var implList = $('impl-list'), implMax = 4;
+// 직전 회차 위험4가 있으면 이행 4번째 칸을 자동으로 연다 — 칸을 새로 만들거나(초기화·이어서 작성) 직전 회차를 새로 읽을 때마다 다시 확인 (2026-10-16)
+var implAuto4Done = false;
 function renumberImpl(){
   remapBlockPhotos(implList, '이행', implMax);
   $('add-impl').style.display = implList.querySelectorAll('.block').length>=implMax ? 'none' : 'block';
@@ -625,7 +627,7 @@ function addImpl(){
     '</div>';
   var row = d.querySelector('.blk-row');
   row.insertBefore(createTile('이행'+(n+1), true), row.firstChild);
-  d.querySelector('.remove-btn').addEventListener('click', function(){ dropBlockPhoto(d); d.remove(); renumberImpl(); });
+  d.querySelector('.remove-btn').addEventListener('click', function(){ implAuto4Done = true; dropBlockPhoto(d); d.remove(); renumberImpl(); }); // 직접 지운 칸은 다시 열지 않음
   implList.appendChild(d); renumberImpl();
 }
 $('add-impl').addEventListener('click', addImpl);
@@ -1833,12 +1835,16 @@ async function loadPrevHazards(my){
     if(it.img){ it.url = URL.createObjectURL(it.img); prevState.urls.push(it.url); }
     return it;
   }) : [];
-  // 직전 회차에 위험4(텍스트 있음)가 있으면 4번째 이행 칸을 자동으로 연다 (사진 안 넣으면 무시되므로 무해)
-  if(prevState.items[3] && prevState.items[3].hz && implList.querySelectorAll('.block').length === 3) addImpl();
+  implAuto4Done = false; // 새로 읽은 직전 회차 기준으로 4번째 칸 다시 확인 (renderPrevHz에서)
   renderPrevHz();
 }
 function renderPrevHz(){
   if(typeof prevState === 'undefined' || !prevState) return; // 초기 렌더 중
+  // 직전 회차에 위험4(텍스트 있음)가 있으면 4번째 이행 칸을 자동으로 연다 (사진 안 넣으면 무시되므로 무해)
+  var it4 = prevState.items && prevState.items[3];
+  if(!implAuto4Done && it4 && (it4.hz || it4.fix) && implList.querySelectorAll('.block').length === 3){
+    implAuto4Done = true; addImpl(); return; // addImpl → renumberImpl → renderPrevHz 로 다시 그려짐
+  }
   implList.querySelectorAll('.block').forEach(function(blk, i){
     var box = blk.querySelector('.prev-hz'); if(!box) return;
     if(!prevState.items){ box.className = 'prev-hz'; box.innerHTML = ''; return; }
@@ -2049,7 +2055,7 @@ async function applyState(st, dateDir){
   setRadio('f-scaf', st.scaf || ''); syncScafKinds();
   setRadio('f-k2bwork', st.k2bwork || '');
   document.querySelectorAll('.f-scaf-kind').forEach(function(c){ c.checked = (st.scafKinds || []).indexOf(c.value) >= 0; });
-  implList.innerHTML = ''; (st.impl || []).forEach(function(){ addImpl(); });
+  implList.innerHTML = ''; implAuto4Done = false; (st.impl || []).forEach(function(){ addImpl(); });
   while(implList.querySelectorAll('.block').length < 3) addImpl();
   implList.querySelectorAll('.block').forEach(function(b, i){
     var s = (st.impl || [])[i]; if(!s) return;
@@ -2864,7 +2870,7 @@ function resetForm(keepSiteRound, forResume){
   if(!keepSiteRound) pickedSiteDir = null; // 새 현장이면 골라둔 폴더 핸들도 버림
   lastDraftKey = null; // 휴대폰 자동 저장: 새 입력은 새로 시작 (저장된 입력은 그대로 둠)
   // 이행/위험 블록 기본 3칸으로
-  implList.innerHTML=''; addImpl(); addImpl(); addImpl();
+  implList.innerHTML=''; implAuto4Done = false; addImpl(); addImpl(); addImpl();
   hzList.innerHTML='';   addHz();   addHz();   addHz();   addHz();
   // 출력 접기 + 날짜 초기화
   $('output').classList.remove('show');
