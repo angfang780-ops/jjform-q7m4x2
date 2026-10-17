@@ -2357,7 +2357,7 @@ async function sharePhone(){
     try{
       await ghUpload(f);
       btn.disabled = false;
-      rememberPhoneSite(val('f-site'));
+      rememberPhoneSite(val('f-site')); markDraftSent();
       btn.textContent = '✓ 받은함에 올렸어요 — PC에서 현장 폴더를 고르면 불러옵니다';
       return;
     }catch(err){
@@ -2373,7 +2373,7 @@ async function sharePhone(){
   if(navigator.canShare && navigator.share && navigator.canShare({ files:[f] })){
     try{
       await navigator.share({ files:[f], title: f.name });
-      rememberPhoneSite(val('f-site'));
+      rememberPhoneSite(val('f-site')); markDraftSent();
       btn.textContent = '✓ 공유함 — OneDrive 「1입력폼」에 올라갔는지 확인';
       return;
     }catch(e){
@@ -2382,7 +2382,7 @@ async function sharePhone(){
       if(e.name === 'NotAllowedError'){ btn.textContent = '✓ 준비 완료 — 한 번 더 누르세요'; return; }
     }
   }
-  rememberPhoneSite(val('f-site'));
+  rememberPhoneSite(val('f-site')); markDraftSent();
   downloadFile(f); // 공유 미지원 → 내려받기
   // 왜 공유가 안 됐는지 (원인 확인용): 보안연결·공유기능·파일공유 가능 여부
   var why = (window.isSecureContext ? '' : '보안연결 아님 ') + (navigator.share ? '' : '공유기능 없음 ') +
@@ -2462,6 +2462,16 @@ async function saveDraft(){
     setDraftNote('💾 휴대폰에 자동 저장됨 (' + pad2(n.getHours()) + ':' + pad2(n.getMinutes()) + ') — 폼을 닫아도 현장명을 다시 치면 불러올 수 있어요');
   }catch(e){ setDraftNote('⚠ 자동 저장 실패: ' + (e.message || e)); }
 }
+// 보내기 성공 → 대기 중인 자동 저장을 먼저 끝내고, 그 입력에 「보낸 시각」을 표시한다 (2026-10-17)
+async function markDraftSent(){
+  if(!IS_PHONE) return;
+  var site = val('f-site'); if(!site) return;
+  try{
+    clearTimeout(draftTimer); await saveDraft();
+    var key = draftKey(site), d = await idbGet(key);
+    if(d){ d.sentAt = Date.now(); await idbSet(key, d); }
+  }catch(e){}
+}
 function queueDraft(){
   if(!IS_PHONE || draftRestoring) return;
   clearTimeout(draftTimer); draftTimer = setTimeout(saveDraft, 1500);
@@ -2470,8 +2480,11 @@ async function offerDraft(){
   if(!IS_PHONE) return;
   var name = val('f-site'); if(!name) return;
   var all = await draftList(), best = null, bestScore = 0;
+  // 「보내기」까지 끝낸 입력은 다음 날부터 묻지 않는다(PC로 넘어가 보고서가 만들어졌으니) — 안 보낸 입력은 7일간 계속 묻는다.
+  // 같은 현장을 이틀 연속 방문하면 어제 입력을 묻던 문제 (2026-10-17). 보낸 뒤 고치면 saveDraft가 sentAt 없이 다시 저장 → 다시 묻는다
+  var today = new Date().toDateString();
   all.forEach(function(x){
-    if(!x.d || !x.d.site) return;
+    if(!x.d || !x.d.site || (x.d.sentAt && new Date(x.d.sentAt).toDateString() !== today)) return;
     var sc = x.key === draftKey(name) ? 1000 : scoreDir(x.d.site, name);
     if(sc >= 66 && (sc > bestScore || (sc === bestScore && x.d.savedAt > best.d.savedAt))){ best = x; bestScore = sc; }
   });
