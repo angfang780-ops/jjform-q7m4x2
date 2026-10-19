@@ -2481,10 +2481,11 @@ async function offerDraft(){
   var name = val('f-site'); if(!name) return;
   var all = await draftList(), best = null, bestScore = 0;
   // 「보내기」까지 끝낸 입력은 다음 날부터 묻지 않는다(PC로 넘어가 보고서가 만들어졌으니) — 안 보낸 입력은 7일간 계속 묻는다.
+  // → 2026-10-19: 보냈든 안 보냈든 「오늘 저장한 입력」만 묻는다(주말 방문 입력을 월요일에 묻던 문제). 사용자 결정 「1일」
   // 같은 현장을 이틀 연속 방문하면 어제 입력을 묻던 문제 (2026-10-17). 보낸 뒤 고치면 saveDraft가 sentAt 없이 다시 저장 → 다시 묻는다
   var today = new Date().toDateString();
   all.forEach(function(x){
-    if(!x.d || !x.d.site || (x.d.sentAt && new Date(x.d.sentAt).toDateString() !== today)) return;
+    if(!x.d || !x.d.site || !x.d.savedAt || new Date(x.d.savedAt).toDateString() !== today) return;
     var sc = x.key === draftKey(name) ? 1000 : scoreDir(x.d.site, name);
     if(sc >= 66 && (sc > bestScore || (sc === bestScore && x.d.savedAt > best.d.savedAt))){ best = x; bestScore = sc; }
   });
