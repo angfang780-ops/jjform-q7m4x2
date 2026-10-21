@@ -1178,6 +1178,12 @@ function scoreDir(dirName, site){
   if(d.indexOf(q) >= 0) return 84;
   if(q.indexOf(d) >= 0) return 74;
   var dHead = norm(dirName.split('-')[0]), qHead = norm(site.split('-')[0]);
+  // 「회사 현장일부」(예: 엠케이 해안동) — 한 회사에 현장이 여럿이라 회사+짧은 현장명으로 적은 경우.
+  // 첫 낱말이 회사명 앞부분이고 나머지 낱말이 모두 공사명에 있으면 그 현장 (2026-10-21 엠케이 해안동/금능리)
+  var words = site.trim().split(/[\s,·\/]+/).map(norm).filter(Boolean);
+  var dRest = norm(dirName.split('-').slice(1).join('-'));
+  if(words.length >= 2 && dHead && dRest && dHead.startsWith(words[0]) &&
+     words.slice(1).every(function(w){ return dRest.indexOf(w) >= 0; })) return 80;
   if(dHead && qHead && (dHead.startsWith(qHead) || qHead.startsWith(dHead))) return 66;
   // 앞 4글자 공통
   if(q.length >= 3 && d.slice(0, Math.max(3,q.length)).indexOf(q.slice(0,3)) === 0) return 40;
@@ -2094,6 +2100,8 @@ async function applyState(st, dateDir){
   resumeFolder = st.folder;
   await refreshPhotoDate();
   markLoaded(st);
+  // resetForm이 엑셀에서 가져온 TBM·위험성평가(초록)를 지우므로, 직접 고르지 않은 항목은 엑셀 값으로 다시 (2026-10-20 포엠)
+  if(xlState.files) loadCbDefaults(xlState.token);
   return got;
 }
 /* 불러온 값 파란 표시: 기본값과 다른 칸·고른 항목·서명만. 그 칸을 고치면 표시가 사라진다 (2026-10-13) */
@@ -2148,31 +2156,47 @@ async function offerResume(siteDir){
     for await (var e of siteDir.values()){ if(e.kind === 'directory' && /^\d{6}$/.test(e.name)) dates.push(e); }
     dates.sort(function(a, b){ return a.name < b.name ? 1 : -1; });
     var limit = dateToYYMMDD(new Date(Date.now() - 7 * 86400000));
+    var top = xlState.files && xlState.files.numbered.length ? xlState.files.numbered[xlState.files.numbered.length - 1].n : 0;
+    // 아직 보고서 안 만든 저장 입력을 날짜마다 모은다 — 어제·오늘 연속 방문이면 둘 다 후보 (2026-10-20 예주, 예전엔 최신만 물음)
+    var cands = [];
     for(var i = 0; i < dates.length && dates[i].name >= limit; i++){
       if(!(await fileExists(dates[i], STATE_FILE))) continue;
       var key = siteDir.name + '/' + dates[i].name;
-      if(resumeAsked[key] || resumeFolder === dates[i].name) return;
-      var st = JSON.parse(await (await (await dates[i].getFileHandle(STATE_FILE)).getFile()).text());
-      // 이미 그 회차 엑셀이 만들어졌으면(최신 -N회차 ≥ 저장된 회차) 묻지 않는다
-      var rnd = parseInt((st.fields || {})['f-round'], 10);
-      var top = xlState.files && xlState.files.numbered.length ? xlState.files.numbered[xlState.files.numbered.length - 1].n : 0;
-      if(rnd && top >= rnd) return;
-      resumeAsked[key] = true;
-      var when = new Date(st.savedAt);
-      var nPh = Object.keys(st.photos || {}).length;
-      var msg = '「' + dates[i].name + '」 폴더에 저장해 둔 입력이 있어요' +
-        ' (' + (when.getMonth() + 1) + '/' + when.getDate() + ' ' + pad2(when.getHours()) + ':' + pad2(when.getMinutes()) + ' 저장' +
-        (rnd ? ', ' + rnd + '회차' : '') + (st.signature ? ', 서명 있음' : '') + ', 사진 ' + nPh + '장).\n\n' +
-        '불러와서 이어서 작성할까요?\n(지금 폼에 적힌 내용은 불러온 내용으로 바뀝니다)';
-      if(!confirm(msg)) return;
-      var got = await applyState(st, dates[i]);
-      var note = $('resume-note');
-      note.textContent = '↩ 「' + dates[i].name + '」에 저장해 둔 입력을 불러왔어요 — 칸' + (st.signature ? '·서명' : '') +
-        (got ? '·사진 ' + got + '장' : '') + '. 이어서 사진을 넣고 저장하면 같은 폴더에 합쳐집니다.';
-      note.innerHTML = escH(note.textContent) + LD_KEY;
-      note.classList.add('show');
-      return;
+      if(resumeAsked[key] || resumeFolder === dates[i].name) return; // 이번 창에서 이미 물었거나 지금 불러온 상태
+      var st0 = JSON.parse(await (await (await dates[i].getFileHandle(STATE_FILE)).getFile()).text());
+      // 이미 그 회차 엑셀이 만들어졌으면(최신 -N회차 ≥ 저장된 회차) 그 날짜와 그 이전은 묻지 않는다
+      var rnd0 = parseInt((st0.fields || {})['f-round'], 10);
+      if(rnd0 && top >= rnd0) break;
+      cands.push({ dir: dates[i], st: st0, rnd: rnd0, key: key });
     }
+    if(!cands.length) return;
+    cands.reverse(); // 이른 날짜부터
+    cands.forEach(function(c){ resumeAsked[c.key] = true; });
+    function desc(c){
+      var w = new Date(c.st.savedAt);
+      return (w.getMonth() + 1) + '/' + w.getDate() + ' ' + pad2(w.getHours()) + ':' + pad2(w.getMinutes()) + ' 저장' +
+        (c.rnd ? ', ' + c.rnd + '회차' : '') + (c.st.signature ? ', 서명 있음' : '') + ', 사진 ' + Object.keys(c.st.photos || {}).length + '장';
+    }
+    var c;
+    if(cands.length > 1){
+      var idx = chooseFolder('이 현장에 아직 보고서 안 만든 저장 입력이 ' + cands.length + '개 날짜로 있어요.',
+        cands.map(function(x){ return x.dir.name + ' 폴더 — ' + desc(x); }));
+      if(idx < 0) return;
+      c = cands[idx];
+    }else{
+      c = cands[0];
+      if(!confirm('「' + c.dir.name + '」 폴더에 저장해 둔 입력이 있어요 (' + desc(c) + ').\n\n' +
+        '불러와서 이어서 작성할까요?\n(지금 폼에 적힌 내용은 불러온 내용으로 바뀝니다)')) return;
+    }
+    var st = c.st;
+    var got = await applyState(st, c.dir);
+    if(!c.rnd) await bumpRoundForEarlier(siteDir, c.dir.name, []);
+    var note = $('resume-note');
+    note.textContent = '↩ 「' + c.dir.name + '」에 저장해 둔 입력을 불러왔어요 — 칸' + (st.signature ? '·서명' : '') +
+      (got ? '·사진 ' + got + '장' : '') + '. 이어서 사진을 넣고 저장하면 같은 폴더에 합쳐집니다.';
+    note.innerHTML = escH(note.textContent) + LD_KEY;
+    note.classList.add('show');
+    return;
   }catch(err){ console.warn('이어서 작성 확인 실패', err); }
 }
 
@@ -2613,24 +2637,82 @@ async function offerInbox(siteDir, manual){
         '\n\n(휴대폰에서 방금 올렸다면 OneDrive 동기화가 끝날 때까지 잠깐 기다렸다가 다시 확인하세요)');
       return false;
     }
+    // 같은 현장이 여러 날짜(어제·오늘 연속 방문 등)면 날짜별로 묶어 어느 날짜를 불러올지 고른다.
+    // 예전엔 최신 날짜만 묻고 다른 날짜 파일까지 불러옴으로 치워서 어제 입력을 못 불러왔음 (2026-10-20 예주)
     hits.sort(function(a, b){ return (b.p.state.savedAt || '') > (a.p.state.savedAt || '') ? 1 : -1; });
-    var h = hits[0], st = h.p.state;
-    var msg = '📱 휴대폰에서 입력한 내용이 받은함에 있어요\n(' + phoneWhen(h.p) + ' 입력, 현장명 「' + phoneSite(h.p) + '」' +
-      (h.p.signature ? ', 서명 있음' : '') + ', 사진 ' + Object.keys(h.p.photos || {}).length + '장' +
-      (hits.length > 1 ? ' · 같은 현장 파일 ' + hits.length + '개 중 최신' : '') + ').\n\n' +
-      '불러올까요?\n(「' + siteDir.name + '\\' + (st.folder || todayYYMMDD()) + '」에 저장되고, 지금 폼 내용은 바뀝니다)';
-    if(!confirm(msg)){ setInboxState('📱 받은함: 휴대폰 입력 있음 (불러오지 않음)' + escH(ghNote)); return false; }
+    var groups = {};
+    hits.forEach(function(x){ var f = phoneFolder(x.p); (groups[f] = groups[f] || []).push(x); });
+    var folders = Object.keys(groups).sort();
+    var pickF = folders[0];
+    if(folders.length > 1){
+      var idx = chooseFolder('📱 받은함에 이 현장 휴대폰 입력이 ' + folders.length + '개 날짜로 있어요.', folders.map(function(f){
+        var x = groups[f][0];
+        return f + ' 폴더 — ' + phoneWhen(x.p) + ' 입력' + (x.p.signature ? ', 서명 있음' : '') + ', 사진 ' + Object.keys(x.p.photos || {}).length + '장';
+      }));
+      if(idx < 0){ setInboxState('📱 받은함: 휴대폰 입력 ' + folders.length + '개 날짜 있음 (불러오지 않음)' + escH(ghNote)); return false; }
+      pickF = folders[idx];
+    }
+    var grp = groups[pickF], h = grp[0], st = h.p.state;
+    if(folders.length === 1){
+      var msg = '📱 휴대폰에서 입력한 내용이 받은함에 있어요\n(' + phoneWhen(h.p) + ' 입력, 현장명 「' + phoneSite(h.p) + '」' +
+        (h.p.signature ? ', 서명 있음' : '') + ', 사진 ' + Object.keys(h.p.photos || {}).length + '장' +
+        (grp.length > 1 ? ' · 같은 현장 파일 ' + grp.length + '개 중 최신' : '') + ').\n\n' +
+        '불러올까요?\n(「' + siteDir.name + '\\' + pickF + '」에 저장되고, 지금 폼 내용은 바뀝니다)';
+      if(!confirm(msg)){ setInboxState('📱 받은함: 휴대폰 입력 있음 (불러오지 않음)' + escH(ghNote)); return false; }
+    }
     if(!(await importPhonePayload(h.p, siteDir))) return false;
-    await archiveInboxFile(inbox, h.e);
-    // 같은 현장을 고쳐서 다시 보낸 예전 파일도 같이 정리 (다음에 예전 것을 또 묻지 않게, 2026-10-13)
-    for(var k = 1; k < hits.length; k++) await archiveInboxFile(inbox, hits[k].e);
-    setInboxState('📱 받은함에서 불러옴: ' + escH(h.e.name) + (hits.length > 1 ? ' (예전 파일 ' + (hits.length - 1) + '개도 같이)' : '') +
-      ' → 받은함\\불러옴 으로 옮김' + escH(ghNote), 'ok');
+    // 같은 날짜를 고쳐서 다시 보낸 예전 파일만 같이 정리 — 다른 날짜 파일은 받은함에 남긴다
+    for(var k = 0; k < grp.length; k++) await archiveInboxFile(inbox, grp[k].e);
+    var rest = folders.filter(function(f){ return f !== pickF; });
+    await bumpRoundForEarlier(siteDir, pickF, rest);
+    setInboxState('📱 받은함에서 불러옴: ' + escH(h.e.name) + (grp.length > 1 ? ' (같은 날짜 예전 파일 ' + (grp.length - 1) + '개도 같이)' : '') +
+      ' → 받은함\\불러옴 으로 옮김' + (rest.length ? ' · 다른 날짜 ' + rest.join(', ') + '는 받은함에 남김 (그 날짜 할 때 「받은함 확인」)' : '') +
+      escH(ghNote), 'ok');
     return true;
   }catch(err){
     setInboxState('📱 받은함 확인 실패: ' + escH(err.message || err), 'warn');
     return false;
   }
+}
+function phoneFolder(p){
+  var st = p.state, d = new Date(st.savedAt);
+  return st.folder || (isNaN(d) ? todayYYMMDD() : dateToYYMMDD(d));
+}
+/* 날짜 폴더 여러 개 중 하나 고르기 — 번호 입력, 기본 1(가장 이른 날짜 = 먼저 만들 회차). 취소 = -1 */
+function chooseFolder(title, labels){
+  var ans = prompt(title + '\n\n' + labels.map(function(l, i){ return (i + 1) + ') ' + l; }).join('\n') +
+    '\n\n불러올 번호를 적으세요. (보고서는 이른 날짜부터 만드는 게 회차 순서에 맞아요)\n(지금 폼 내용은 불러온 내용으로 바뀝니다)', '1');
+  if(ans == null) return -1;
+  var n = parseInt(String(ans).trim(), 10);
+  return n >= 1 && n <= labels.length ? n - 1 : -1;
+}
+/* 앞 날짜 입력이 아직 보고서로 안 만들어졌으면 회차를 그만큼 올린다 (어제·오늘 연속 방문, 2026-10-20 예주).
+   직접 적은 회차·저장된 회차는 건드리지 않는다. extraFolders = 아직 받은함에 남은 다른 날짜 */
+async function bumpRoundForEarlier(siteDir, folder, extraFolders){
+  try{
+    var auto = xlState.autoRound;
+    if(!auto || val('f-round') !== auto) return;
+    var top = xlState.files && xlState.files.numbered.length ? xlState.files.numbered[xlState.files.numbered.length - 1].n : 0;
+    var early = {};
+    (extraFolders || []).forEach(function(f){ if(f < folder) early[f] = 1; });
+    var limit = dateToYYMMDD(new Date(Date.now() - 14 * 86400000));
+    for await (var e of siteDir.values()){
+      if(e.kind !== 'directory' || !/^\d{6}$/.test(e.name) || e.name >= folder || e.name < limit || early[e.name]) continue;
+      if(!(await fileExists(e, STATE_FILE))) continue;
+      var st = JSON.parse(await (await (await e.getFileHandle(STATE_FILE)).getFile()).text());
+      var r = parseInt((st.fields || {})['f-round'], 10);
+      if(r){ if(r > top) early[e.name] = 1; continue; }
+      var hasPdf = false; // 회차가 안 적힌 입력: 그 폴더에 보고서 PDF가 없으면 아직 안 만든 것
+      for await (var f of e.values()){ if(f.kind === 'file' && /회차.*\.pdf$/i.test(f.name)){ hasPdf = true; break; } }
+      if(!hasPdf) early[e.name] = 1;
+    }
+    var list = Object.keys(early).sort();
+    if(!list.length) return;
+    var nr = String(+auto + list.length);
+    $('f-round').value = nr; xlState.autoRound = nr;
+    $('round-src').textContent = '(앞 날짜 ' + list.join(', ') + ' 입력이 아직 보고서 전 → +' + list.length + ', 확인하세요)';
+    if(xlState.files) checkPrefill();
+  }catch(err){ console.warn('회차 올리기 확인 실패', err); }
 }
 async function reloadArchived(inbox, siteDir){
   try{
