@@ -2288,33 +2288,61 @@ function ghRefreshUi(){
   if($('share-btn') && !$('share-btn').disabled) $('share-btn').textContent = SHARE_LABEL;
   if($('gh-token-btn')) $('gh-token-btn').textContent = on ? '🔑 GitHub 받은함 ✓' : '🔑 GitHub 받은함 토큰';
 }
+/* 2026-10-29: 현장에서 「받은함에 올리는 중…」에 멈춰 있던 문제(청명 등 여러 번) — fetch에 시간 제한이 없어
+   약한 신호·화면 꺼짐·앱 전환으로 응답이 끊기면 끝없이 기다렸다. 요청마다 시간 제한(25초 + 보내는 크기 8KB당 1초)을 두고
+   연결 실패·시간 초과·5xx면 2초 쉬고 다시(모두 3번). 401·404·422 같은 답은 다시 해도 같으니 바로 오류. */
+var GH_TIMEOUT = 25000, GH_TRIES = 3, GH_RETRY_WAIT = 2000, ghOnRetry = null;
 async function gh(method, path, body, raw){
   var h = { 'Authorization': 'Bearer ' + ghToken(), 'X-GitHub-Api-Version': '2022-11-28',
             'Accept': raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json' };
   if(body) h['Content-Type'] = 'application/json';
-  var r = await fetch('https://api.github.com/repos/' + GH_REPO + path,
-                      { method: method, headers: h, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
-  if(!r.ok){
-    var m = ''; try{ m = (await r.json()).message || ''; }catch(e){}
-    var err = new Error('GitHub ' + r.status + (m ? ' ' + m : '') +
-      (r.status === 401 ? ' (토큰이 틀렸거나 만료됨)' : r.status === 404 ? ' (저장소가 없거나 토큰 권한 없음)' : ''));
-    err.status = r.status; throw err;
+  var data = body ? JSON.stringify(body) : undefined;
+  var limit = GH_TIMEOUT + (data ? Math.round(data.length / 8) : 0);
+  for(var t = 1; ; t++){
+    var ac = new AbortController(), timer = setTimeout(function(){ ac.abort(); }, limit);
+    try{
+      var r = await fetch('https://api.github.com/repos/' + GH_REPO + path,
+                          { method: method, headers: h, body: data, cache: 'no-store', signal: ac.signal });
+      if(!r.ok){
+        var m = ''; try{ m = (await r.json()).message || ''; }catch(e){}
+        var err = new Error('GitHub ' + r.status + (m ? ' ' + m : '') +
+          (r.status === 401 ? ' (토큰이 틀렸거나 만료됨)' : r.status === 404 ? ' (저장소가 없거나 토큰 권한 없음)' : ''));
+        err.status = r.status; err.retry = r.status >= 500; throw err;
+      }
+      var out = raw ? await r.blob() : await r.json(); // 받는 도중 끊겨도 시간 제한 안
+      clearTimeout(timer);
+      return out;
+    }catch(e){
+      clearTimeout(timer);
+      if(e.status && !e.retry) throw e;
+      if(t >= GH_TRIES){
+        if(e.status) throw e;
+        throw new Error(ac.signal.aborted ? '응답이 없어요 (신호가 약하거나 화면이 꺼졌던 듯)' : '연결 안 됨 (' + (e.message || e) + ')');
+      }
+      if(ghOnRetry) ghOnRetry(t + 1, GH_TRIES);
+      await new Promise(function(res){ setTimeout(res, GH_RETRY_WAIT); });
+    }
   }
-  return raw ? r.blob() : r.json();
 }
 async function ghHead(){
   var ref = await gh('GET', '/git/ref/heads/main');
   var c = await gh('GET', '/git/commits/' + ref.object.sha);
   return { sha: ref.object.sha, tree: c.tree.sha };
 }
-async function ghUpload(f){
+// step(n): 진행 단계(1~4/4)를 버튼에 보여 주려고 — 멈췄는지 올라가는 중인지 알 수 있게 (2026-10-29)
+async function ghUpload(f, step){
+  step = step || function(){};
   var u = await blobToDataUrl(f);
+  step(1);
   var blob = await gh('POST', '/git/blobs', { content: u.slice(u.indexOf(',') + 1), encoding: 'base64' });
   for(var i = 0; ; i++){
+    step(2);
     var hd = await ghHead();
+    step(3);
     var tree = await gh('POST', '/git/trees', { base_tree: hd.tree,
       tree: [{ path: GH_DIR + f.name, mode: '100644', type: 'blob', sha: blob.sha }] });
     var c = await gh('POST', '/git/commits', { message: f.name, tree: tree.sha, parents: [hd.sha] });
+    step(4);
     try{ await gh('PATCH', '/git/refs/heads/main', { sha: c.sha }); return; }
     catch(e){ if(e.status !== 422 || i >= 2) throw e; } // 그 사이 다른 파일이 올라감 → 다시
   }
@@ -2377,19 +2405,31 @@ async function sharePhone(){
   try{ f = await p; }
   catch(err){ phonePrep = null; btn.disabled = false; btn.textContent = SHARE_LABEL; alert('파일 만들기 실패: ' + err); return; }
   if(ghToken() && !ghSkipOnce){
-    btn.textContent = '받은함에 올리는 중…';
+    var site = val('f-site');
+    btn.textContent = '받은함에 올리는 중… 0/4';
+    // 올리기 전에 「보낼 것」으로 먼저 저장 → 올리다 멈춰 창을 닫아도 다음에 폼을 열면 자동으로 다시 보냄 (2026-10-29)
+    await outboxPut(site, f);
+    ghBusy = true;
+    var stepNo = 0;
+    ghOnRetry = function(t, n){ btn.textContent = '신호가 약해서 다시 시도 중 (' + t + '/' + n + ') — 그대로 두세요 · ' + stepNo + '/4'; };
     try{
-      await ghUpload(f);
+      await ghUpload(f, function(n){ stepNo = n; btn.textContent = '받은함에 올리는 중… ' + n + '/4'; });
+      await outboxDel(site, f.name);
       btn.disabled = false;
-      rememberPhoneSite(val('f-site')); markDraftSent();
+      rememberPhoneSite(site); markDraftSent();
       btn.textContent = '✓ 받은함에 올렸어요 — PC에서 현장 폴더를 고르면 불러옵니다';
       return;
     }catch(err){
       btn.disabled = false;
       ghSkipOnce = true; // 다음 한 번은 공유 창으로
-      btn.textContent = '⚠ 받은함 올리기 실패 — 한 번 더 누르면 원드라이브 공유로 보냄';
-      alert('GitHub 받은함에 못 올렸어요: ' + (err.message || err) + '\n\n버튼을 한 번 더 누르면 예전처럼 원드라이브 공유 창으로 보냅니다.');
+      btn.textContent = '⚠ 아직 못 보냄 — 신호가 돌아오면 자동으로 다시 보냅니다 (한 번 더 누르면 원드라이브 공유)';
+      alert('받은함에 못 올렸어요: ' + (err.message || err) +
+        '\n\n입력은 휴대폰에 남아 있고, 신호가 돌아오거나 폼을 다시 열면 자동으로 다시 보냅니다.' +
+        '\n급하면 버튼을 한 번 더 눌러 원드라이브 공유 창으로 보내세요.');
       return;
+    }finally{
+      ghBusy = false; ghOnRetry = null;
+      outboxRefresh();
     }
   }
   ghSkipOnce = false;
@@ -2397,6 +2437,7 @@ async function sharePhone(){
   if(navigator.canShare && navigator.share && navigator.canShare({ files:[f] })){
     try{
       await navigator.share({ files:[f], title: f.name });
+      outboxDel(val('f-site')).then(outboxRefresh); // 원드라이브로 보냈으니 자동 다시 보내기 안 함
       rememberPhoneSite(val('f-site')); markDraftSent();
       btn.textContent = '✓ 공유함 — OneDrive 「1입력폼」에 올라갔는지 확인';
       return;
@@ -2448,14 +2489,15 @@ async function idbDel(key){
     await new Promise(function(res){ var t = db.transaction('kv','readwrite').objectStore('kv').delete(key); t.onsuccess = res; t.onerror = res; });
   }catch(e){}
 }
-async function draftList(){
+function draftList(){ return kvList(DRAFT_PREFIX); }
+async function kvList(prefix){
   try{
     var db = await idb();
     return await new Promise(function(res){
       var out = [], c = db.transaction('kv','readonly').objectStore('kv').openCursor();
       c.onsuccess = function(){
         var cur = c.result; if(!cur){ res(out); return; }
-        if(typeof cur.key === 'string' && cur.key.indexOf(DRAFT_PREFIX) === 0) out.push({ key: cur.key, d: cur.value });
+        if(typeof cur.key === 'string' && cur.key.indexOf(prefix) === 0) out.push({ key: cur.key, d: cur.value });
         cur.continue();
       };
       c.onerror = function(){ res(out); };
@@ -2538,6 +2580,63 @@ async function offerDraft(){
 async function pruneDrafts(){
   var limit = Date.now() - DRAFT_DAYS * 86400000;
   (await draftList()).forEach(function(x){ if(!x.d || !x.d.savedAt || x.d.savedAt < limit) idbDel(x.key); });
+  (await kvList(OUTBOX_PREFIX)).forEach(function(x){ if(!x.d || !x.d.at || x.d.at < limit) idbDel(x.key); });
+}
+
+/* -- 휴대폰: 못 보낸 입력 자동으로 다시 보내기 (2026-10-29) --
+   「받은함으로 보내기」를 누르면 올리기 전에 그 파일을 현장별 1개 「보낼 것」(IndexedDB outbox:현장)으로 저장하고, 올라가면 지운다.
+   실패하거나 올리는 도중 창을 닫으면 남아 있다가 폼을 열 때·신호가 돌아올 때(online)·화면으로 돌아올 때·1분마다 다시 보낸다. */
+var OUTBOX_PREFIX = 'outbox:', ghBusy = false, outboxTimer = null;
+async function outboxPut(site, f){
+  try{ await idbSet(OUTBOX_PREFIX + norm(site), { site: site, name: f.name, file: f, at: Date.now() }); }catch(e){}
+}
+// name을 주면 그 파일일 때만 지운다(그 사이 같은 현장을 새로 보냈으면 새것은 남김)
+async function outboxDel(site, name){
+  var key = OUTBOX_PREFIX + norm(site);
+  try{
+    if(name){ var d = await idbGet(key); if(!d || d.name !== name) return; }
+    await idbDel(key);
+  }catch(e){}
+}
+async function outboxList(){ return (await kvList(OUTBOX_PREFIX)).filter(function(x){ return x.d && x.d.file; }); }
+async function outboxRefresh(done){
+  if(!IS_PHONE) return;
+  var n = $('outbox-note'); if(!n) return;
+  var all = await outboxList();
+  clearInterval(outboxTimer); outboxTimer = null;
+  if(!all.length){
+    n.style.display = done ? '' : 'none';
+    n.style.color = 'var(--green)';
+    n.textContent = done || '';
+    return;
+  }
+  n.style.display = ''; n.style.color = 'var(--red)';
+  n.innerHTML = '⚠ 아직 PC로 안 간 입력: ' + all.map(function(x){
+      var t = new Date(x.d.at); return '「' + escH(x.d.site) + '」(' + pad2(t.getHours()) + ':' + pad2(t.getMinutes()) + ')';
+    }).join(', ') + ' — 신호가 돌아오면 자동으로 다시 보냅니다 ' +
+    '<button type="button" id="outbox-retry" style="font-size:12px;">지금 다시 보내기</button>';
+  $('outbox-retry').addEventListener('click', function(){ outboxFlush(true); });
+  outboxTimer = setInterval(function(){ outboxFlush(); }, 60000);
+}
+async function outboxFlush(manual){
+  if(!IS_PHONE || ghBusy || !ghToken()) return;
+  if(!manual && navigator.onLine === false) return;
+  var all = await outboxList(); if(!all.length) return;
+  ghBusy = true;
+  var sent = [], fail = null, n = $('outbox-note');
+  if(n) n.textContent = '못 보냈던 입력을 다시 보내는 중…';
+  try{
+    for(var i = 0; i < all.length; i++){
+      var x = all[i].d;
+      try{ await ghUpload(x.file); }catch(e){ fail = e; break; }
+      await outboxDel(x.site, x.name);
+      sent.push(x.site); rememberPhoneSite(x.site);
+      // 그 뒤로 고치지 않은 자동 저장이면 「보냄」 표시
+      try{ var dk = draftKey(x.site), d = await idbGet(dk); if(d && d.savedAt <= x.at){ d.sentAt = Date.now(); await idbSet(dk, d); } }catch(e){}
+    }
+  }finally{ ghBusy = false; }
+  await outboxRefresh(sent.length ? '✓ 못 보냈던 「' + sent.join('」·「') + '」 입력을 받은함에 올렸어요' : '');
+  if(manual && fail) alert('아직 못 보냈어요: ' + (fail.message || fail) + '\n신호가 돌아오면 자동으로 다시 보냅니다.');
 }
 
 /* -- PC: 받은함 연결·확인 -- */
@@ -2821,7 +2920,13 @@ if(IS_PHONE){
   var dn = document.createElement('div'); dn.id = 'draft-note';
   dn.style.cssText = 'font-size:11.5px;color:var(--ink-dim);margin-top:6px;';
   $('share-btn').insertAdjacentElement('afterend', dn);
-  pruneDrafts();
+  // 못 보낸 입력 안내 + 자동 다시 보내기 (2026-10-29)
+  var on = document.createElement('div'); on.id = 'outbox-note';
+  on.style.cssText = 'display:none;font-size:13px;font-weight:bold;margin:6px 0;';
+  $('share-btn').insertAdjacentElement('beforebegin', on);
+  window.addEventListener('online', function(){ outboxFlush(); });
+  document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'visible') outboxFlush(); });
+  pruneDrafts().then(outboxRefresh).then(function(){ outboxFlush(); });
   document.querySelector('.output-card .steps').innerHTML = ghToken() ?
     '<li><strong>「📤 받은함으로 보내기」</strong> → 폴더 선택 없이 바로 올라갑니다 (GitHub 받은함)</li>' +
     '<li>PC에서 폼을 열고 현장 폴더를 고르면 받은함에서 자동으로 불러옵니다 (서명·칸·사진)</li>' :
