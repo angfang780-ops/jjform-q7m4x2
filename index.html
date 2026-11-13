@@ -337,7 +337,7 @@
     </div>
     <div class="xl-status" id="xl-status"><div class="msg" id="xl-msg"></div><button type="button" id="xl-recheck">🔄 다시 확인</button></div>
     <div class="resume-note" id="resume-note"></div>
-    <p class="hint">이미 엑셀 파일에 직접 넣은 항목은 <strong>비워두세요</strong> — 폼에 안 적으면 엑셀의 기존 값을 그대로 씁니다. 현장 폴더를 고르면 <strong>회차가 자동으로 들어가고</strong>(최신 회차 파일 +1), 각 칸 아래에 <strong>엑셀에 이미 들어 있는 값</strong>이 초록색으로 표시됩니다 — 초록색인 칸은 비워두면 됩니다. 엑셀을 고친 뒤엔 <strong>저장하고</strong> 「다시 확인」을 누르세요. (현장명·회차는 파일 매칭용입니다. <strong>「📁 폴더 선택」</strong>을 누르면 탐색기 창이 떠서 현장 폴더를 고르면 폴더명이 현장명으로 들어갑니다 — Chrome·Edge. 브라우저를 새로 켠 뒤 <strong>처음 한 번</strong>만 최상위 폴더<code>공사진행중</code> "수정 허용"을 묻고, 그 뒤로는 폴더 선택·저장 때 팝업이 안 뜹니다. 고른 폴더는 저장할 때도 그대로 쓰입니다. 저장 폴더 이름<code>(YYMMDD)</code>은 <strong>사진 촬영일시(메타정보)</strong>에서 자동으로 가져옵니다)</p>
+    <p class="hint">이미 엑셀 파일에 직접 넣은 항목은 <strong>비워두세요</strong> — 폼에 안 적으면 엑셀의 기존 값을 그대로 씁니다. 현장 폴더를 고르면 <strong>회차가 자동으로 들어가고</strong>(최신 회차 파일 +1), 각 칸 아래에 <strong>엑셀에 이미 들어 있는 값</strong>이 초록색으로 표시됩니다 — 초록색인 칸은 비워두면 됩니다. 엑셀을 고친 뒤엔 <strong>저장하고</strong> 「다시 확인」을 누르세요. (현장명·회차는 파일 매칭용입니다. <strong>「📁 폴더 선택」</strong>을 누르면 탐색기 창이 떠서 현장 폴더를 고르면 폴더명이 현장명으로 들어갑니다 — Chrome·Edge. 브라우저를 새로 켠 뒤 <strong>처음 한 번</strong>만 최상위 폴더<code>공사진행중</code> "수정 허용"을 묻고, 그 뒤로는 폴더 선택·저장 때 팝업이 안 뜹니다. 고른 폴더는 저장할 때도 그대로 쓰입니다. 저장 폴더 이름<code>(YYMMDD)</code>은 <strong>기술지도 실시일</strong>로 정해집니다)</p>
   </div>
 
   <div class="card">
@@ -360,7 +360,7 @@
     <div class="group-label">전경</div>
     <div class="photo-grid" data-group="scene"></div>
 
-    <p class="hint">이행·위험·자료·교육·장비 사진은 아래 <strong>P.2 · P.3 · P.5</strong> 각 항목 옆에서 넣습니다. 넣은 사진은 <strong>전경1.jpg, 위험1.jpg</strong> 식으로 이름이 바뀌어 저장됩니다. 저장 폴더는 <strong>사진을 고른 날짜 폴더</strong>로 자동 결정됩니다(못 찾으면 오늘 날짜) — <span id="photo-date-note">사진을 넣으면 여기에 표시</span>. 아래 <strong>생성</strong> 후 「폴더에 바로 저장」(Chrome·Edge) 또는 「ZIP 저장」을 쓰세요.</p>
+    <p class="hint">이행·위험·자료·교육·장비 사진은 아래 <strong>P.2 · P.3 · P.5</strong> 각 항목 옆에서 넣습니다. 넣은 사진은 <strong>전경1.jpg, 위험1.jpg</strong> 식으로 이름이 바뀌어 저장됩니다. 저장 폴더는 <strong>기술지도 실시일</strong> 날짜 폴더입니다(실시일이 비었으면 사진을 고른 날짜 폴더, 그것도 없으면 오늘) — <span id="photo-date-note">사진을 넣으면 여기에 표시</span>. 아래 <strong>생성</strong> 후 「폴더에 바로 저장」(Chrome·Edge) 또는 「ZIP 저장」을 쓰세요.</p>
   </div>
 
   <div class="card">
@@ -1094,7 +1094,8 @@ async function refreshPhotoDate(siteHint){
     var el = $('photo-date-note');
     if(el) el.textContent = folderName() === resumeFolder
       ? '저장 폴더: ' + resumeFolder + ' (불러온 날짜 폴더에 이어서 저장)'
-      : '저장 폴더: ' + photoDateStr + ' (사진을 가져온 날짜 폴더 — 사진 없이 저장했던 「' + resumeFolder + '」의 입력·서명을 이 폴더로 옮김)';
+      : '저장 폴더: ' + folderName() + (visitFolder() ? ' (기술지도 실시일 기준' : ' (사진을 가져온 날짜 폴더') +
+        ' — 「' + resumeFolder + '」에 저장했던 입력·서명을 이 폴더로 옮김)';
     return folderName();
   }
   updatePhotoDateNote(labels.length, !!result);
@@ -1103,6 +1104,7 @@ async function refreshPhotoDate(siteHint){
 function updatePhotoDateNote(count, fromMeta){
   var el = $('photo-date-note');
   if(!el) return;
+  if(visitFolder()){ el.textContent = '저장 폴더: ' + visitFolder() + ' (기술지도 실시일 기준)'; return; }
   if(!count){ el.textContent = '사진을 넣으면 여기에 표시'; return; }
   el.textContent = '저장 폴더: ' + photoDateStr + (photoDateSource === 'folder' ? ' (사진을 가져온 날짜 폴더)'
     : ' (현장 폴더의 날짜 폴더에서 같은 사진을 못 찾아 오늘 날짜로)');
@@ -1113,7 +1115,21 @@ var photoDateFromPhotos = false;
 // 단, 그 폴더에 사진이 하나도 없으면(서명·인원만 먼저 저장 → 폴더명이 '오늘'로 정해진 경우)
 // 나중에 넣은 사진을 가져온 날짜 폴더가 우선한다. 하루 지나 전날 보고서를 쓸 때 오늘 폴더로 가던 문제 (2026-10-14)
 function hasSavedPhotos(){ return Object.keys(photos).some(function(l){ return photos[l].existing; }); }
+/* 저장 폴더 = 기술지도 실시일 (2026-11-13 사용자 지시: 「서명·폼 정보를 실시일 기준으로, 앞으로도」).
+   실시일 칸(M/D)이 있으면 무조건 그 날짜 폴더. 비어 있을 때만 예전 규칙(사진 가져온 폴더 → 오늘).
+   연도는 올해, 단 한 달 넘게 미래면 작년(1월에 12월 방문을 적는 경우). */
+function visitFolder(){
+  var m = (val('f-date') || '').match(/^\s*(\d{1,2})\s*[\/.\-월]\s*(\d{1,2})/);
+  if(!m) return null;
+  var mo = +m[1], da = +m[2];
+  if(mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+  var now = new Date(), y = now.getFullYear();
+  if(new Date(y, mo - 1, da) - now > 31 * 86400000) y--;
+  return pad2(y % 100) + pad2(mo) + pad2(da);
+}
 function folderName(){
+  var v = visitFolder();
+  if(v) return v;
   if(resumeFolder && !hasSavedPhotos() && photoDateFromPhotos && photoDateStr !== resumeFolder) return photoDateStr;
   return resumeFolder || photoDateStr;
 }
@@ -1378,9 +1394,10 @@ async function saveToFolder(){
       var target = orderName(eff) + p.ext;
       if(p.existing){
         // 불러온 사진은 다시 쓰지 않는다(재압축 방지). 이름만 바뀌었으면(양호 전환 등) 새 이름으로 옮긴다
-        if(p.savedName === target) continue;
+        // 실시일이 바뀌어 다른 날짜 폴더로 옮길 때(oldDir)는 원본 그대로 새 폴더로 옮긴다 (2026-11-13)
+        if(p.savedName === target && !oldDir) continue;
         await writeInto(dateDir, target, p.file);
-        try{ await dateDir.removeEntry(p.savedName); }catch(e){}
+        try{ await (oldDir || dateDir).removeEntry(p.savedName); }catch(e){}
         p.savedName = target; wrote++;
         continue;
       }
@@ -1390,7 +1407,7 @@ async function saveToFolder(){
     // 불러온 뒤 슬롯에서 뺀 사진은 폴더에서도 지운다
     for(var k=0;k<removedSaved.length;k++){
       if(!Object.keys(photos).some(function(l){ return photos[l].savedName === removedSaved[k]; })){
-        try{ await dateDir.removeEntry(removedSaved[k]); }catch(e){}
+        try{ await (oldDir || dateDir).removeEntry(removedSaved[k]); }catch(e){}
       }
     }
     removedSaved = [];
@@ -2992,6 +3009,8 @@ $('f-round').addEventListener('change', function(){
   if(xlState.files) checkPrefill();
 });
 XL_FIELDS.forEach(function(fd){ $(fd[0]).addEventListener('input', renderXlChips); });
+// 실시일을 바꾸면 저장 폴더 안내도 바로 바꾼다 (2026-11-13)
+$('f-date').addEventListener('input', function(){ updatePhotoDateNote(ORDER_REF.filter(function(l){ return photos[l]; }).length); });
 $('xl-recheck').addEventListener('click', function(){
   if(xlState.siteDir) analyzeSite(xlState.siteDir, true);
 });
