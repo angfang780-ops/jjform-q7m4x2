@@ -264,6 +264,10 @@
   .inbox-row button:hover{ border-color:var(--accent); color:var(--accent-ink); }
   .share-btn{ flex-basis:100% !important; border-color:var(--accent) !important; background:var(--accent); color:#14161C; }
   .share-btn:disabled{ opacity:.6; cursor:wait; }
+  /* 비계·작업공종을 아직 안 골랐으면 빨간 테두리 (2026-11-21 사용자: TBM·위험성평가 사진 보고 고르는 걸 자꾸 놓침) */
+  .field.need-pick{ border:2px solid var(--red, #E5484D); border-radius:8px; padding:6px 9px; background:rgba(229,72,77,.07); }
+  .field .need-msg{ display:none; color:var(--red, #E5484D); font-weight:700; font-size:12px; margin-left:4px; }
+  .field.need-pick .need-msg{ display:inline; }
 </style>
 </head>
 <body>
@@ -312,7 +316,7 @@
           <label><input type="radio" name="f-risk" value="아니오">아니오</label>
         </div>
       </div>
-      <div class="field full"><label>비계 사용현황 <span style="font-weight:400;font-size:11.5px;">(K2B 입력용 — 비우면 직전 회차 값 사용)</span></label>
+      <div class="field full" id="scaf-field"><label>비계 사용현황 <span style="font-weight:400;font-size:11.5px;">(K2B 입력용 — 비우면 직전 회차 값 사용)</span><span class="need-msg">⚠ TBM·위험성평가 사진 보고 골라 주세요</span></label>
         <div id="scaf-box" style="display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;font-size:13px;padding:4px 0;">
           <label style="display:flex;gap:5px;align-items:center;font-weight:400;cursor:pointer;"><input type="radio" name="f-scaf" value="" checked style="width:auto;margin:0;flex:none;">비움</label>
           <label style="display:flex;gap:5px;align-items:center;font-weight:400;cursor:pointer;"><input type="radio" name="f-scaf" value="미사용" style="width:auto;margin:0;flex:none;">미사용</label>
@@ -322,7 +326,7 @@
           <label style="display:flex;gap:5px;align-items:center;font-weight:400;cursor:pointer;"><input type="checkbox" class="f-scaf-kind" value="시스템비계" disabled style="width:auto;margin:0;flex:none;">시스템비계</label>
         </div>
       </div>
-      <div class="field full"><label>작업공종 <span style="font-weight:400;font-size:11.5px;">(K2B 입력용 — 비우면 Claude가 판단)</span></label>
+      <div class="field full" id="k2bwork-field"><label>작업공종 <span style="font-weight:400;font-size:11.5px;">(K2B 입력용 — 비우면 Claude가 판단)</span><span class="need-msg">⚠ TBM·위험성평가 사진 보고 골라 주세요</span></label>
         <div id="k2bwork-box" style="display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;font-size:13px;padding:4px 0;">
           <label style="display:flex;gap:5px;align-items:center;font-weight:400;cursor:pointer;"><input type="radio" name="f-k2bwork" value="" checked style="width:auto;margin:0;flex:none;">비움</label>
           <label style="display:flex;gap:5px;align-items:center;font-weight:400;cursor:pointer;"><input type="radio" name="f-k2bwork" value="가설공사" style="width:auto;margin:0;flex:none;">가설공사</label>
@@ -714,6 +718,17 @@ function syncScafKinds(){
   });
 }
 document.querySelectorAll('input[name="f-scaf"]').forEach(function(r){ r.addEventListener('change', syncScafKinds); });
+/* 비계·작업공종이 「비움」이면 칸 전체에 빨간 테두리 (2026-11-21). 불러오기·초기화처럼 코드가 값을 바꿔도 따라가게 0.5초마다 확인 */
+function syncNeedPick(){
+  [['scaf-field', 'f-scaf'], ['k2bwork-field', 'f-k2bwork']].forEach(function(p){
+    var f = document.getElementById(p[0]); if(!f) return;
+    var r = document.querySelector('input[name="' + p[1] + '"]:checked');
+    f.classList.toggle('need-pick', !(r && r.value));
+  });
+}
+document.addEventListener('change', syncNeedPick, true);
+setInterval(syncNeedPick, 500);
+syncNeedPick();
 function radioVal(name){
   var r = document.querySelector('input[name="' + name + '"]:checked');
   return r ? r.value : '';
@@ -2735,14 +2750,20 @@ async function offerInbox(siteDir, manual){
       try{ var n = await ghPullInbox(inbox); if(n) ghNote = ' · GitHub에서 ' + n + '개 받음'; }
       catch(err){ ghNote = ' · ⚠ GitHub 받은함 확인 실패: ' + (err.message || err); }
     }
-    var files = await listPhoneFiles(inbox), hits = [], others = 0;
+    var files = await listPhoneFiles(inbox), hits = [], others = 0, doneF = [];
     for(var i = 0; i < files.length; i++){
       try{
         var p = await readPhonePayload(await files[i].getFile());
         var s = phoneSite(p);
-        if(s && scoreDir(siteDir.name, s) >= 66) hits.push({ e: files[i], p: p }); else others++;
+        if(s && scoreDir(siteDir.name, s) >= 66){
+          // 그 날짜 폴더에 보고서 PDF가 이미 있으면 끝난 입력 → 묻지 않고 받은함\불러옴으로 치운다
+          // (11/10 동뫼 입력이 보고서를 다 만든 뒤에도 받은함에 남아 11/20에 다시 물었음, 2026-11-20)
+          if(await folderHasReportPdf(siteDir, phoneFolder(p))){ await archiveInboxFile(inbox, files[i]); doneF.push(phoneFolder(p)); continue; }
+          hits.push({ e: files[i], p: p });
+        } else others++;
       }catch(err){ others++; }
     }
+    if(doneF.length) ghNote += ' · 보고서 끝난 ' + doneF.join(', ') + ' 입력은 불러옴으로 치움';
     if(!hits.length){
       setInboxState('📱 받은함: 「' + escH(siteDir.name) + '」 현장 파일 없음' + (others ? ' (다른 파일 ' + others + '개)' : '') + escH(ghNote),
                     ghNote.indexOf('⚠') >= 0 ? 'warn' : 'ok');
@@ -2789,6 +2810,14 @@ async function offerInbox(siteDir, manual){
     setInboxState('📱 받은함 확인 실패: ' + escH(err.message || err), 'warn');
     return false;
   }
+}
+/* 현장\YYMMDD 폴더에 「…회차….pdf」(완성 보고서)가 있으면 true */
+async function folderHasReportPdf(siteDir, folder){
+  try{
+    var d = await siteDir.getDirectoryHandle(folder);
+    for await (var f of d.values()){ if(f.kind === 'file' && /회차.*\.pdf$/i.test(f.name)) return true; }
+  }catch(e){}
+  return false;
 }
 function phoneFolder(p){
   var st = p.state, d = new Date(st.savedAt);
